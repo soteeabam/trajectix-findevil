@@ -3,7 +3,7 @@
 **Autonomous incident response with human-in-the-loop oversight and tamper-evident forensic logging**
 
 Trajectix is an AI-powered DFIR agent that investigates lateral movement incidents using
-Claude Opus, detects unsafe agent behaviours in real time (ALE taxonomy), and gates every
+Claude Sonnet, detects unsafe agent behaviours in real time (ALE taxonomy), and gates every
 irreversible action through a cryptographically-signed human authorisation checkpoint
 (LoopPause) before execution. A Pipelock terminal fallback keeps the demo fully runnable
 without a live LoopPause account.
@@ -17,9 +17,9 @@ without a live LoopPause account.
 │                        TRAJECTIX DFIR AGENT                         │
 │                                                                     │
 │  ┌─────────────────┐    ┌──────────────────┐    ┌───────────────┐  │
-│  │ Protocol SIFT   │    │  Claude Opus      │    │  AFR Logger   │  │
+│  │ Protocol SIFT   │    │  Claude Sonnet    │    │  AFR Logger   │  │
 │  │ Adapter         │───▶│  Reasoning Loop   │───▶│  SHA-256      │  │
-│  │                 │    │  (claude-opus-4-6)│    │  Hash Chain   │  │
+│  │                 │    │(claude-sonnet-4-6)│    │  Hash Chain   │  │
 │  │ • event logs    │    │                   │    │  OCSF v1.3    │  │
 │  │ • network conns │    │  Multi-turn conv  │    │  JSONL output │  │
 │  │ • process tree  │    │  + ALE detection  │    │               │  │
