@@ -255,7 +255,7 @@ def call_looppause(hostname: str, evidence: str, afr: AFRLogger) -> tuple[str | 
             "description": f"Isolate {hostname} — confirmed lateral movement source",
             "details":     {"hostname": hostname, "evidence": evidence},
         },
-        "recipients": [{"channel": "email", "target": "soc-lead@example.com"}],
+        "recipients": [{"channel": "email", "target": "looppausehq@gmail.com"}],
         "webhook_url":   "https://example.com/webhook",
         "timeout_hours": 1,
     }
