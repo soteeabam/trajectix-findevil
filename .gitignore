@@ -1,0 +1,7 @@
+.env
+*.env
+__pycache__/
+*.pyc
+trajectix_session.jsonl
+*.log
+.DS_Store
