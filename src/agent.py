@@ -283,23 +283,26 @@ def call_looppause(hostname: str, evidence: str, afr: AFRLogger) -> tuple[str | 
         "hostname": hostname,
         "evidence": evidence,
     })
-    print(f"{C}[LoopPause] Pause {pause_id} created — routing to soc-lead@example.com{RS}")
-    print(f"{C}[LoopPause] Polling for decision (60 s timeout)...{RS}")
+    print(f"{C}[LoopPause] Pause {pause_id} created — routing to looppausehq@gmail.com{RS}")
+    print(f"{C}[LoopPause] Polling for decision (120 s timeout)...{RS}")
 
-    for attempt in range(20):
+    TERMINAL = {"approved", "denied", "rejected", "timed_out", "expired", "cancelled"}
+    elapsed  = 0
+    timeout  = 120
+
+    while elapsed < timeout:
         time.sleep(3)
+        elapsed += 3
         try:
             poll = requests.get(
                 f"{LOOPPAUSE_BASE_URL}/v1/pauses/{pause_id}",
                 headers=headers,
                 timeout=10,
             )
-            if not poll.ok:
-                continue
             data   = poll.json()
-            status = data.get("status")
-            if status == "pending":
-                print(f"{C}  [{attempt + 1:02d}/20] Waiting...{RS}")
+            status = data.get("status", "unknown").lower()
+            print(f"{C}[LoopPause] Status: {status} ({elapsed}s elapsed){RS}")
+            if status not in TERMINAL:
                 continue
 
             decision           = (data.get("decision") or "denied").upper()
@@ -334,10 +337,11 @@ def call_looppause(hostname: str, evidence: str, afr: AFRLogger) -> tuple[str | 
 
             return decision, comment
 
-        except requests.RequestException:
+        except Exception as e:
+            print(f"{Y}[LoopPause] Poll error: {e}{RS}")
             continue
 
-    print(f"{Y}[WARN] LoopPause poll timed out — falling back to Pipelock{RS}")
+    print(f"{Y}[WARN] LoopPause poll timed out after {timeout}s — falling back to Pipelock{RS}")
     return None, None
 
 
