@@ -239,70 +239,18 @@ def _verify_looppause_signature(response: dict) -> None:
         print(f"{Y}[WARN] Signature verification error: {exc} — skipping (demo){RS}")
 
 
-def _deep_find_first(node, keys: set[str]):
-    """
-    Recursively search a nested dict/list for the first value whose key
-    (case-insensitive) is in `keys`. Returns None if nothing matches.
-
-    Used instead of guessing fixed wrapper key names — the LoopPause
-    response shape can nest the human's decision/comment arbitrarily
-    deep, and a flat data.get(...) silently returns nothing in that case.
-    """
-    if isinstance(node, dict):
-        for k, v in node.items():
-            if k.lower() in keys and v not in (None, ""):
-                return v
-        for v in node.values():
-            found = _deep_find_first(v, keys)
-            if found is not None:
-                return found
-    elif isinstance(node, list):
-        for item in node:
-            found = _deep_find_first(item, keys)
-            if found is not None:
-                return found
-    return None
-
-
-_DECISION_KEYS = {"decision", "outcome", "verdict", "approval", "status_decision"}
-_COMMENT_KEYS = {
-    "comment", "comments", "feedback", "note", "notes",
-    "reviewer_comment", "rejection_reason", "denial_reason",
-    "message", "reason", "text", "review_comment",
-}
-_AUTH_TYPE_KEYS = {"authorization_type", "auth_type", "authorized_by"}
-
-
 def _extract_decision_fields(data: dict) -> tuple[str, str, str]:
     """
     Extract decision, comment, and authorization_type from a LoopPause
-    pause response by recursively scanning the whole payload for
-    plausible key names, rather than assuming a fixed shape.
+    pause response. The human's response is nested under "response":
+    {decision, comment, authorization_type, responder, ...}; fall back
+    to a flat top-level shape for forward compatibility.
     """
-    decision = _deep_find_first(data, _DECISION_KEYS) or "denied"
-    comment  = _deep_find_first(data, _COMMENT_KEYS) or ""
-    auth_type = _deep_find_first(data, _AUTH_TYPE_KEYS) or ""
+    response = data.get("response") or {}
+    decision  = response.get("decision")           or data.get("decision")           or "denied"
+    comment   = response.get("comment")             or data.get("comment")             or ""
+    auth_type = response.get("authorization_type") or data.get("authorization_type") or ""
     return str(decision).lower(), str(comment), str(auth_type)
-
-
-def _list_string_fields(node, path: str = "") -> list[tuple[str, str]]:
-    """
-    Walk a nested dict/list and return (key_path, value) for every
-    non-empty string leaf. Used for a compact, by-hand-transcribable
-    debug listing when the full JSON can't be copied off a restricted
-    VM — short enough to read off-screen and type back.
-    """
-    found: list[tuple[str, str]] = []
-    if isinstance(node, dict):
-        for k, v in node.items():
-            sub_path = f"{path}.{k}" if path else k
-            found.extend(_list_string_fields(v, sub_path))
-    elif isinstance(node, list):
-        for i, item in enumerate(node):
-            found.extend(_list_string_fields(item, f"{path}[{i}]"))
-    elif isinstance(node, str) and node.strip():
-        found.append((path, node))
-    return found
 
 
 def poll_looppause(
@@ -328,15 +276,6 @@ def poll_looppause(
         status = data.get("status")
 
         if status == "responded":
-            # Diagnostic — print the raw payload so a schema mismatch
-            # (e.g. decision/comment nested under a wrapper key) is
-            # immediately visible instead of silently producing an
-            # empty comment and a false "no correction context" block.
-            print(f"{Y}[DEBUG] String fields in LoopPause response (path = value):{RS}")
-            for field_path, value in _list_string_fields(data):
-                shown = value if len(value) <= 70 else value[:70] + "..."
-                print(f"    {field_path} = {shown!r}")
-
             decision, comment, authorization_type = _extract_decision_fields(data)
             proof = dict(data)
             proof["authorization_type"] = authorization_type
@@ -344,13 +283,6 @@ def poll_looppause(
             print(f"{C}[LoopPause] Decision received: {decision.upper()}{RS}")
             if comment:
                 print(f"{C}[LoopPause] Comment: {comment}{RS}")
-            else:
-                print(
-                    f"{Y}[WARN] No comment text in response — the reviewer declined "
-                    f"without typing feedback. Self-correction requires a comment; "
-                    f"to test it, type the correction into the Slack comment field "
-                    f"before clicking Deny.{RS}"
-                )
             _verify_looppause_signature(proof)
             return decision, comment, proof
 
