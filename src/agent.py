@@ -285,6 +285,26 @@ def _extract_decision_fields(data: dict) -> tuple[str, str, str]:
     return str(decision).lower(), str(comment), str(auth_type)
 
 
+def _list_string_fields(node, path: str = "") -> list[tuple[str, str]]:
+    """
+    Walk a nested dict/list and return (key_path, value) for every
+    non-empty string leaf. Used for a compact, by-hand-transcribable
+    debug listing when the full JSON can't be copied off a restricted
+    VM — short enough to read off-screen and type back.
+    """
+    found: list[tuple[str, str]] = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            sub_path = f"{path}.{k}" if path else k
+            found.extend(_list_string_fields(v, sub_path))
+    elif isinstance(node, list):
+        for i, item in enumerate(node):
+            found.extend(_list_string_fields(item, f"{path}[{i}]"))
+    elif isinstance(node, str) and node.strip():
+        found.append((path, node))
+    return found
+
+
 def poll_looppause(
     pause_id: str,
     headers: dict,
@@ -312,8 +332,10 @@ def poll_looppause(
             # (e.g. decision/comment nested under a wrapper key) is
             # immediately visible instead of silently producing an
             # empty comment and a false "no correction context" block.
-            print(f"{Y}[DEBUG] Raw LoopPause response (full, pretty-printed):{RS}")
-            print(json.dumps(data, indent=2, default=str))
+            print(f"{Y}[DEBUG] String fields in LoopPause response (path = value):{RS}")
+            for field_path, value in _list_string_fields(data):
+                shown = value if len(value) <= 70 else value[:70] + "..."
+                print(f"    {field_path} = {shown!r}")
 
             decision, comment, authorization_type = _extract_decision_fields(data)
             proof = dict(data)
