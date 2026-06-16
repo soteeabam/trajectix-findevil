@@ -239,10 +239,51 @@ def _verify_looppause_signature(response: dict) -> None:
         print(f"{Y}[WARN] Signature verification error: {exc} — skipping (demo){RS}")
 
 
-def call_looppause(hostname: str, evidence: str, afr: AFRLogger) -> tuple[str | None, str | None]:
+def poll_looppause(
+    pause_id: str,
+    headers: dict,
+    afr: AFRLogger,
+    interval: int = 3,
+    max_attempts: int = 60,
+) -> tuple[str, str, dict]:
+    """
+    Poll a LoopPause pause until it reaches a terminal "responded" state.
+
+    Only "pending" and "delivered" are valid intermediate states — anything
+    else is unexpected and raises. Returns (decision, comment, proof) where
+    proof is the full signed response (used for AFR logging and Ed25519
+    verification).
+    """
+    url = f"{LOOPPAUSE_BASE_URL}/v1/pauses/{pause_id}"
+
+    for attempt in range(max_attempts):
+        resp = requests.get(url, headers=headers, timeout=10)
+        data = resp.json()
+        status = data.get("status")
+
+        if status == "responded":
+            decision = (data.get("decision") or "denied").lower()
+            comment  = data.get("comment", "")
+            proof    = data
+            print(f"{C}[LoopPause] Decision received: {decision.upper()}{RS}")
+            _verify_looppause_signature(proof)
+            return decision, comment, proof
+
+        if status not in ("pending", "delivered"):
+            raise Exception(f"Unexpected pause status: {status}")
+
+        print(f"{C}[LoopPause] Waiting for human decision... ({attempt + 1}/{max_attempts}){RS}")
+        time.sleep(interval)
+
+    raise TimeoutError("LoopPause: no human decision received within timeout")
+
+
+def call_looppause(hostname: str, evidence: str, afr: AFRLogger) -> tuple[str, str, dict] | None:
     """
     POST a pause to LoopPause and poll for a decision.
-    Returns (decision, comment) or (None, None) if unavailable → fall back to Pipelock.
+    Returns (decision, comment, proof), or None if LoopPause is unreachable
+    (only network/setup failures fall back to Pipelock — a real decision,
+    including "rejected", is always handled here).
     """
     headers = {
         "Authorization": f"Bearer {LOOPPAUSE_API_KEY}",
@@ -256,7 +297,7 @@ def call_looppause(hostname: str, evidence: str, afr: AFRLogger) -> tuple[str | 
             "details":     {"hostname": hostname, "evidence": evidence},
         },
         "recipients": [{"channel": "slack", "target": "#looppause-approvals", "fallback_email": "looppausehq@gmail.com"}],
-        "webhook_url":   "https://looppause-api.onrender.com/v1/webhooks/slack",
+        "webhook_url":   "https://api.looppause.com/v1/webhooks/slack",
         "timeout_hours": 1,
     }
 
@@ -270,79 +311,55 @@ def call_looppause(hostname: str, evidence: str, afr: AFRLogger) -> tuple[str | 
         resp.raise_for_status()
     except requests.RequestException as exc:
         print(f"{Y}[WARN] LoopPause unavailable: {exc} — falling back to Pipelock{RS}")
-        return None, None
+        return None
 
     pause_data = resp.json()
     pause_id   = pause_data.get("pause_id")
     if not pause_id:
         print(f"{Y}[WARN] LoopPause response missing pause_id — falling back to Pipelock{RS}")
-        return None, None
+        return None
 
     afr.log("LOOPPAUSE_PAUSE", f"Pause created: {pause_id}", {
         "pause_id": pause_id,
         "hostname": hostname,
         "evidence": evidence,
     })
-    print(f"{C}[LoopPause] Pause {pause_id} created — routing to looppausehq@gmail.com{RS}")
-    print(f"{C}[LoopPause] Polling for decision (120 s timeout)...{RS}")
+    print(f"{C}[LoopPause] Pause {pause_id} created — routing to #looppause-approvals{RS}")
 
-    TERMINAL = {"approved", "denied", "rejected", "timed_out", "expired", "cancelled"}
-    elapsed  = 0
-    timeout  = 120
+    try:
+        decision, comment, proof = poll_looppause(pause_id, headers, afr)
+    except TimeoutError as exc:
+        print(f"{Y}[WARN] {exc} — falling back to Pipelock{RS}")
+        return None
+    except Exception as exc:
+        print(f"{RD}[!] LoopPause poll failed: {exc} — falling back to Pipelock{RS}")
+        return None
 
-    while elapsed < timeout:
-        time.sleep(3)
-        elapsed += 3
-        try:
-            poll = requests.get(
-                f"{LOOPPAUSE_BASE_URL}/v1/pauses/{pause_id}",
-                headers=headers,
-                timeout=10,
-            )
-            data   = poll.json()
-            status = data.get("status", "unknown").lower()
-            print(f"{C}[LoopPause] Status: {status} ({elapsed}s elapsed){RS}")
-            if status not in TERMINAL:
-                continue
+    authorization_type = proof.get("authorization_type", "")
 
-            decision           = (data.get("decision") or "denied").upper()
-            comment            = data.get("comment", "")
-            authorization_type = data.get("authorization_type", "")
-
-            print(f"{C}[LoopPause] Decision received: {decision} ({authorization_type}){RS}")
-
-            _verify_looppause_signature(data)
-
-            if authorization_type == "system_fallback":
-                afr.log(
-                    "AUTHORIZATION_DOWNGRADE",
-                    "LoopPause returned system_fallback — not a human decision",
-                    {
-                        "authorization_type": authorization_type,
-                        "reason": "timeout or auto-resolution",
-                    },
-                    severity="CRITICAL",
-                )
-                print(f"{RD}[!] AUTHORIZATION DOWNGRADE: system_fallback — blocking action{RS}")
-                return "DENIED", ""
-
-            afr.log("LOOPPAUSE_PROOF", f"LoopPause proof for {pause_id}", {
-                "pause_id":           pause_id,
+    if authorization_type == "system_fallback":
+        afr.log(
+            "AUTHORIZATION_DOWNGRADE",
+            "LoopPause returned system_fallback — not a human decision",
+            {
                 "authorization_type": authorization_type,
-                "signature":          data.get("signature", ""),
-                "canonical_payload":  data.get("canonical_payload", ""),
-                "decision":           decision,
-                "comment":            comment,
-            })
+                "reason": "timeout or auto-resolution",
+            },
+            severity="CRITICAL",
+        )
+        print(f"{RD}[!] AUTHORIZATION DOWNGRADE: system_fallback — blocking action{RS}")
+        return "denied", "", proof
 
-            return decision, comment
+    afr.log("LOOPPAUSE_PROOF", f"LoopPause proof for {pause_id}", {
+        "pause_id":           pause_id,
+        "authorization_type": authorization_type,
+        "signature":          proof.get("signature", ""),
+        "canonical_payload":  proof.get("canonical_payload", ""),
+        "decision":           decision,
+        "comment":            comment,
+    })
 
-        except Exception as e:
-            print(f"{Y}[LoopPause] Poll error: {e}{RS}")
-            continue
-
-    print(f"{Y}[WARN] LoopPause poll timed out after {timeout}s — falling back to Pipelock{RS}")
-    return None, None
+    return decision, comment, proof
 
 
 def gate_irreversible_action(
@@ -351,27 +368,36 @@ def gate_irreversible_action(
     context_snippet: str,
     afr: AFRLogger,
     stats: dict,
-) -> tuple[str, str]:
-    """Gate an irreversible action through LoopPause or Pipelock."""
+) -> tuple[str, str, dict | None]:
+    """
+    Gate an irreversible action through LoopPause or Pipelock.
+
+    Pipelock is exclusively the fallback for when LOOPPAUSE_API_KEY is not
+    set, or when LoopPause itself is unreachable (network/setup failure).
+    A real LoopPause decision — approved, rejected, or denied — is always
+    returned as-is and never substituted with a Pipelock prompt.
+    """
     stats["looppause_calls"] += 1
 
     if LOOPPAUSE_API_KEY:
         print(f"\n{C}[LoopPause] Routing isolation approval for {hostname}{RS}")
-        decision, comment = call_looppause(hostname, evidence, afr)
-        if decision is not None:
-            if decision == "APPROVED":
+        result = call_looppause(hostname, evidence, afr)
+        if result is not None:
+            decision, comment, proof = result
+            if decision == "approved":
                 stats["approvals"] += 1
             else:
                 stats["denials"] += 1
-            return decision, comment
+            return decision, comment, proof
 
     print(f"\n{Y}[Pipelock] Activating terminal human gate{RS}")
     decision, comment = activate_pipelock(hostname, evidence, context_snippet, afr)
-    if decision == "APPROVED":
+    decision = decision.lower()
+    if decision == "approved":
         stats["approvals"] += 1
     else:
         stats["denials"] += 1
-    return decision, comment
+    return decision, comment, None
 
 # ── Investigation helpers ─────────────────────────────────────────────────────
 
@@ -611,28 +637,34 @@ def main() -> None:
                 "turn":     turn + 1,
             })
 
-            decision, comment = gate_irreversible_action(
+            decision, comment, proof = gate_irreversible_action(
                 hostname, evidence, response_text, afr, stats
             )
 
-            if decision == "APPROVED":
+            if decision == "approved":
                 afr.log(
                     "IRREVERSIBLE_ACTION_APPROVED",
-                    f"Isolation of {hostname} approved and executed",
-                    {"hostname": hostname, "evidence": evidence},
+                    f"Isolation of {hostname} approved and executed. "
+                    f"Authorization: {(proof or {}).get('authorization_type', 'pipelock')}",
+                    {
+                        "hostname":      hostname,
+                        "evidence":      evidence,
+                        "proof":         proof,
+                        "checkpoint_id": (proof or {}).get("pause_id"),
+                    },
                 )
                 print(f"\n{G}[SIM] network_isolation({hostname}) — EXECUTED{RS}")
                 print(f"{G}      Host removed from network segment.{RS}")
                 break
 
-            elif decision == "DENIED":
+            elif decision in ("denied", "rejected"):
                 if comment:
-                    print(f"\n{C}[Self-Correction] SOC lead comment received: {comment}{RS}")
+                    print(f"\n{C}[Self-Correction] Human reviewer feedback received: {comment}{RS}")
                     afr.log(
                         "SELF_CORRECTION",
-                        f"Re-investigation triggered: {comment}",
+                        f"Action rejected by human reviewer. Feedback: {comment}",
                         {
-                            "trigger":             "denial_with_comment",
+                            "trigger":             "human_rejection",
                             "original_conclusion": hostname,
                             "correction_context":  comment,
                         },
@@ -640,17 +672,21 @@ def main() -> None:
                     )
                     stats["corrections"] += 1
 
+                    print(f"{C}[SELF-CORRECTION TRIGGERED]{RS}")
+                    print(f"{C}Re-running investigation with additional context...{RS}\n")
+
                     # Inject the correction into the conversation
                     conversation.append({"role": "assistant", "content": response_text})
                     history.append({"role": "assistant", "content": response_text})
 
                     correction_msg = (
-                        f"CORRECTION FROM SOC LEAD: {comment}\n\n"
-                        "Please re-examine the forensic artifacts with this context in mind. "
-                        "Focus specifically on Event ID 4648 (logon with explicit credentials) "
-                        "in the Windows event logs — this event records the host FROM WHICH "
-                        "credentials are being used, revealing the true lateral movement source. "
-                        "Cross-reference with process artifacts and network connections.\n\n"
+                        f"HUMAN REVIEWER FEEDBACK: {comment}\n\n"
+                        "Your previous conclusion was rejected. Re-analyse the evidence with "
+                        "this feedback in mind. Look specifically at what the reviewer "
+                        "highlighted — Event ID 4648 (logon with explicit credentials) in the "
+                        "Windows event logs records the host FROM WHICH credentials are being "
+                        "used, revealing the true lateral movement source. Cross-reference with "
+                        "process artifacts and network connections.\n\n"
                         "Identify the correct source host and provide:\n"
                         "RECOMMEND ISOLATION: [correct hostname]\n"
                         "EVIDENCE: [primary indicator]"
