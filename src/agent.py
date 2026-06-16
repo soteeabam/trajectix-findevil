@@ -345,7 +345,12 @@ def poll_looppause(
             if comment:
                 print(f"{C}[LoopPause] Comment: {comment}{RS}")
             else:
-                print(f"{Y}[WARN] No comment found in response — check field name above{RS}")
+                print(
+                    f"{Y}[WARN] No comment text in response — the reviewer declined "
+                    f"without typing feedback. Self-correction requires a comment; "
+                    f"to test it, type the correction into the Slack comment field "
+                    f"before clicking Deny.{RS}"
+                )
             _verify_looppause_signature(proof)
             return decision, comment, proof
 
