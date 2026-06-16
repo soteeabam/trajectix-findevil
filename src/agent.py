@@ -187,9 +187,9 @@ def activate_pipelock(
             )
             afr.log(
                 "PIPELOCK_DECISION",
-                f"Operator denied isolation of {hostname}",
+                f"Operator rejected isolation of {hostname}",
                 {
-                    "decision":         "DENIED",
+                    "decision":         "REJECTED",
                     "operator_input":   "R",
                     "hostname":         hostname,
                     "injected_comment": comment,
@@ -197,7 +197,7 @@ def activate_pipelock(
             )
             print(RD + f"\n  ✗ ROLLBACK — injecting SOC lead correction context" + RS)
             time.sleep(0.8)
-            return "DENIED", comment
+            return "REJECTED", comment
 
 # ── LoopPause integration ─────────────────────────────────────────────────────
 
@@ -657,53 +657,59 @@ def main() -> None:
                 print(f"{G}      Host removed from network segment.{RS}")
                 break
 
-            elif decision in ("denied", "rejected"):
-                if comment:
-                    print(f"\n{C}[Self-Correction] Human reviewer feedback received: {comment}{RS}")
-                    afr.log(
-                        "SELF_CORRECTION",
-                        f"Action rejected by human reviewer. Feedback: {comment}",
-                        {
-                            "trigger":             "human_rejection",
-                            "original_conclusion": hostname,
-                            "correction_context":  comment,
-                        },
-                        severity="MEDIUM",
-                    )
-                    stats["corrections"] += 1
+            elif decision == "rejected" and comment:
+                print(f"\n{C}[SELF-CORRECTION] Human feedback: {comment}{RS}\n")
 
-                    print(f"{C}[SELF-CORRECTION TRIGGERED]{RS}")
-                    print(f"{C}Re-running investigation with additional context...{RS}\n")
+                afr.log(
+                    "SELF_CORRECTION",
+                    comment,
+                    {
+                        "trigger":             "human_rejection",
+                        "original_conclusion": hostname,
+                        "correction_context":  comment,
+                    },
+                    severity="MEDIUM",
+                )
+                stats["corrections"] += 1
 
-                    # Inject the correction into the conversation
-                    conversation.append({"role": "assistant", "content": response_text})
-                    history.append({"role": "assistant", "content": response_text})
+                # Inject correction into conversation and continue —
+                # do NOT call LoopPause/Pipelock again until Claude reaches
+                # a new conclusion about a different host.
+                conversation.append({"role": "assistant", "content": response_text})
+                history.append({"role": "assistant", "content": response_text})
 
-                    correction_msg = (
-                        f"HUMAN REVIEWER FEEDBACK: {comment}\n\n"
-                        "Your previous conclusion was rejected. Re-analyse the evidence with "
-                        "this feedback in mind. Look specifically at what the reviewer "
-                        "highlighted — Event ID 4648 (logon with explicit credentials) in the "
-                        "Windows event logs records the host FROM WHICH credentials are being "
-                        "used, revealing the true lateral movement source. Cross-reference with "
-                        "process artifacts and network connections.\n\n"
-                        "Identify the correct source host and provide:\n"
-                        "RECOMMEND ISOLATION: [correct hostname]\n"
-                        "EVIDENCE: [primary indicator]"
-                    )
-                    conversation.append({"role": "user", "content": correction_msg})
-                    history.append({"role": "user", "content": correction_msg})
-                    continue  # re-investigate
+                correction_msg = (
+                    f"CORRECTION FROM HUMAN REVIEWER: {comment}\n\n"
+                    "Please re-examine the evidence with this in mind and identify "
+                    "the correct threat actor.\n\n"
+                    "Provide your updated conclusion as:\n"
+                    "RECOMMEND ISOLATION: [correct hostname]\n"
+                    "EVIDENCE: [primary indicator]"
+                )
+                conversation.append({"role": "user", "content": correction_msg})
+                history.append({"role": "user", "content": correction_msg})
+                continue  # loops back to the Claude API call
 
-                else:
-                    afr.log(
-                        "IRREVERSIBLE_ACTION_BLOCKED",
-                        f"Isolation of {hostname} denied — no correction context",
-                        {"hostname": hostname},
-                        severity="MEDIUM",
-                    )
-                    print(f"\n{RD}[!] Action blocked. Investigation complete.{RS}")
-                    break
+            elif decision == "rejected" and not comment:
+                # No comment — just block and end
+                afr.log(
+                    "IRREVERSIBLE_ACTION_BLOCKED",
+                    f"Isolation of {hostname} rejected — no correction context",
+                    {"hostname": hostname},
+                    severity="MEDIUM",
+                )
+                print(f"\n{RD}[!] Action blocked. Investigation complete.{RS}")
+                break
+
+            elif decision == "denied":
+                afr.log(
+                    "IRREVERSIBLE_ACTION_BLOCKED",
+                    f"Isolation of {hostname} denied — no correction context",
+                    {"hostname": hostname},
+                    severity="MEDIUM",
+                )
+                print(f"\n{RD}[!] Action blocked. Investigation complete.{RS}")
+                break
 
         else:
             # Agent hasn't reached a conclusion yet — continue
