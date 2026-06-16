@@ -255,8 +255,8 @@ def call_looppause(hostname: str, evidence: str, afr: AFRLogger) -> tuple[str | 
             "description": f"Isolate {hostname} — confirmed lateral movement source",
             "details":     {"hostname": hostname, "evidence": evidence},
         },
-        "recipients": [{"channel": "email", "target": "looppausehq@gmail.com"}],
-        "webhook_url":   "https://example.com/webhook",
+        "recipients": [{"channel": "slack", "target": "#looppause-approvals", "fallback_email": "looppausehq@gmail.com"}],
+        "webhook_url":   "https://looppause-api.onrender.com/v1/webhooks/slack",
         "timeout_hours": 1,
     }
 
