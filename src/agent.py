@@ -657,7 +657,7 @@ def main() -> None:
                 print(f"{G}      Host removed from network segment.{RS}")
                 break
 
-            elif decision == "rejected" and comment:
+            elif decision in ("rejected", "denied") and comment:
                 print(f"\n{C}[SELF-CORRECTION] Human feedback: {comment}{RS}\n")
 
                 afr.log(
@@ -690,21 +690,11 @@ def main() -> None:
                 history.append({"role": "user", "content": correction_msg})
                 continue  # loops back to the Claude API call
 
-            elif decision == "rejected" and not comment:
+            elif decision in ("rejected", "denied") and not comment:
                 # No comment — just block and end
                 afr.log(
                     "IRREVERSIBLE_ACTION_BLOCKED",
-                    f"Isolation of {hostname} rejected — no correction context",
-                    {"hostname": hostname},
-                    severity="MEDIUM",
-                )
-                print(f"\n{RD}[!] Action blocked. Investigation complete.{RS}")
-                break
-
-            elif decision == "denied":
-                afr.log(
-                    "IRREVERSIBLE_ACTION_BLOCKED",
-                    f"Isolation of {hostname} denied — no correction context",
+                    f"Isolation of {hostname} {decision} — no correction context",
                     {"hostname": hostname},
                     severity="MEDIUM",
                 )
