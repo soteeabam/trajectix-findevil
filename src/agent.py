@@ -239,6 +239,34 @@ def _verify_looppause_signature(response: dict) -> None:
         print(f"{Y}[WARN] Signature verification error: {exc} — skipping (demo){RS}")
 
 
+def _extract_decision_fields(data: dict) -> tuple[str, str, str]:
+    """
+    Extract decision, comment, and authorization_type from a LoopPause
+    pause response, tolerating either a flat payload or one nested under
+    a common wrapper key. Different backends (and webhook-fed APIs in
+    particular) often store the human's response separately from the
+    pause envelope — checking only the top level silently drops the
+    comment and breaks self-correction.
+    """
+    candidates = [data]
+    for key in ("response", "result", "decision_data", "payload", "human_response"):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+
+    decision            = "denied"
+    comment             = ""
+    authorization_type  = ""
+    for c in candidates:
+        if c.get("decision"):
+            decision = str(c["decision"]).lower()
+        if c.get("comment"):
+            comment = c["comment"]
+        if c.get("authorization_type"):
+            authorization_type = c["authorization_type"]
+    return decision, comment, authorization_type
+
+
 def poll_looppause(
     pause_id: str,
     headers: dict,
@@ -262,10 +290,21 @@ def poll_looppause(
         status = data.get("status")
 
         if status == "responded":
-            decision = (data.get("decision") or "denied").lower()
-            comment  = data.get("comment", "")
-            proof    = data
+            # Diagnostic — print the raw payload so a schema mismatch
+            # (e.g. decision/comment nested under a wrapper key) is
+            # immediately visible instead of silently producing an
+            # empty comment and a false "no correction context" block.
+            print(f"{Y}[DEBUG] Raw LoopPause response: {json.dumps(data)[:800]}{RS}")
+
+            decision, comment, authorization_type = _extract_decision_fields(data)
+            proof = dict(data)
+            proof["authorization_type"] = authorization_type
+
             print(f"{C}[LoopPause] Decision received: {decision.upper()}{RS}")
+            if comment:
+                print(f"{C}[LoopPause] Comment: {comment}{RS}")
+            else:
+                print(f"{Y}[WARN] No comment found in response — check field name above{RS}")
             _verify_looppause_signature(proof)
             return decision, comment, proof
 
